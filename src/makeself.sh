@@ -15,9 +15,12 @@
   fi
 
   if [[ "$1" == "lambda" ]]; then
-    srmake -o${EXECUTABLE} refal05c.ref
+    rlmake --debug -o${EXECUTABLE} --ref5rsl refal05c.ref
     echo
-    rm -f *.rasl
+  fi
+
+  if [[ "$2" == "and_stop" ]]; then
+    exit
   fi
 
   source ../c-plus-plus.conf.sh

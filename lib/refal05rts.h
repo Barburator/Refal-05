@@ -48,9 +48,14 @@ typedef void (*r05_function_ptr) (struct r05_node *begin, struct r05_node *end);
 struct r05_function {
   r05_function_ptr ptr;
   const char *name;
+#ifdef R05_PROFILER
+  double seconds;
+  unsigned long calls;
+  struct r05_function *next;
+#endif
 };
 
-typedef unsigned long r05_number;
+typedef unsigned int r05_number;
 
 struct r05_node {
   struct r05_node *prev;
@@ -209,6 +214,7 @@ void r05_enum_function_code(struct r05_node *begin, struct r05_node *end);
 void r05_this_is_generated_function(void);
 void r05_start_e_loop(void);
 void r05_stop_e_loop(void);
+double r05_time_elapsed(void);
 
 /* Рефал-машина, операционная среда и диагностика */
 
@@ -227,10 +233,23 @@ R05_NORETURN void r05_switch_default_violation_impl(
 );
 
 
+#ifdef R05_PROFILER
+#define R05_INIT_PROFILER 0, 0, NULL,
+#else
+#define R05_INIT_PROFILER
+#endif
+
+
 #define R05_DEFINE_ENTRY_ENUM(name, rep) \
-  struct r05_function r05f_ ## name = { r05_enum_function_code, rep };
+  struct r05_function r05f_ ## name = { \
+    r05_enum_function_code, rep, \
+    R05_INIT_PROFILER \
+  };
 #define R05_DEFINE_LOCAL_ENUM(name, rep) \
-  static struct r05_function r05f_ ## name = { r05_enum_function_code, rep };
+  static struct r05_function r05f_ ## name = { \
+    r05_enum_function_code, rep, \
+    R05_INIT_PROFILER \
+  };
 
 
 #define R05_DECLARE_ENTRY_FUNCTION(name) \
@@ -248,7 +267,9 @@ R05_NORETURN void r05_switch_default_violation_impl(
   static void r05c_ ## name( \
     struct r05_node *arg_begin, struct r05_node *arg_end \
   ); \
-  scope struct r05_function r05f_ ## name = { r05c_ ## name, rep }; \
+  scope struct r05_function r05f_ ## name = { \
+    r05c_ ## name, rep, R05_INIT_PROFILER \
+  }; \
   static void r05c_ ## name( \
     struct r05_node *arg_begin, struct r05_node *arg_end \
   )

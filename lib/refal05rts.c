@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,6 +16,32 @@
 #define EXIT_CODE_RECOGNITION_IMPOSSIBLE 201
 #define EXIT_CODE_NO_MEMORY 202
 #define EXIT_CODE_BUILTIN_ERROR 203
+
+
+#ifdef R05_CLOCK_SKIP
+
+static clock_t fast_clock(void) {
+  static clock_t prev = 0;
+  static int skip = 0;
+
+  if (skip++ % R05_CLOCK_SKIP == 0) {
+    prev = clock();
+  }
+
+  return prev;
+}
+
+#define clock() fast_clock()
+
+#endif  /* ifdef R05_CLOCK_SKIP */
+
+
+#define STATIC_ASSERT(message, expr) \
+  int message : ((expr) ? +1 : -1)
+
+struct static_asserts {
+  STATIC_ASSERT(r05_number_is_32bit, sizeof(r05_number) * CHAR_BIT == 32);
+};
 
 
 /*==============================================================================
@@ -71,6 +98,10 @@ int r05_empty_seq(struct r05_node *first, struct r05_node *last) {
 }
 
 
+#define equal_functions(left, right) \
+  (strcmp((left)->name, (right)->name) == 0)
+
+
 int r05_function_left(
   struct r05_function *fn, struct r05_node **first, struct r05_node **last
 ) {
@@ -80,7 +111,7 @@ int r05_function_left(
     return 0;
   } else if ((*first)->tag != R05_DATATAG_FUNCTION) {
     return 0;
-  } else if ((*first)->info.function != fn) {
+  } else if (! equal_functions((*first)->info.function, fn)) {
     return 0;
   } else {
     move_left(first, last);
@@ -98,7 +129,7 @@ int r05_function_right(
     return 0;
   } else if (R05_DATATAG_FUNCTION != (*last)->tag) {
     return 0;
-  } else if ((*last)->info.function != fn) {
+  } else if (! equal_functions((*last)->info.function, fn)) {
     return 0;
   } else {
     move_right(first, last);
@@ -337,7 +368,7 @@ static int equal_nodes(struct r05_node *node1, struct r05_node *node2) {
         return (node1->info.number == node2->info.number);
 
       case R05_DATATAG_FUNCTION:
-        return (node1->info.function == node2->info.function);
+        return equal_functions(node1->info.function, node2->info.function);
 
       /*
         Сведения о связях между скобками нужны для других целей, здесь
@@ -781,11 +812,12 @@ static void add_copy_tevar_time(clock_t duration);
 static void copy_nonempty_evar(
   struct r05_node *evar_b_sample, struct r05_node *evar_e_sample
 ) {
+  struct r05_node *limit = evar_e_sample->next;
   clock_t start_copy_time = clock();
 
   struct r05_node *bracket_stack = 0;
 
-  while (! r05_empty_seq(evar_b_sample, evar_e_sample)) {
+  while (evar_b_sample != limit) {
     struct r05_node *copy = r05_alloc_node(evar_b_sample->tag);
 
     if (is_open_bracket(copy)) {
@@ -801,7 +833,7 @@ static void copy_nonempty_evar(
       copy->info = evar_b_sample->info;
     }
 
-    move_left(&evar_b_sample, &evar_e_sample);
+    evar_b_sample = evar_b_sample->next;
   }
 
   assert(bracket_stack == 0);
@@ -916,6 +948,11 @@ static int s_in_generated;
 static int s_in_e_loop;
 
 
+#ifdef R05_PROFILER
+static struct r05_function *s_profiled_functions;
+#endif  /* R05_PROFILER */
+
+
 static void start_profiler(void) {
   s_start_program_time = clock();
   s_in_generated = 0;
@@ -990,6 +1027,10 @@ static int reverse_compare(const void *left_void, const void *right_void) {
   }
 }
 
+#ifdef R05_PROFILER
+static void print_functions_profile(double full_time_sec);
+#endif  /* R05_PROFILER */
+
 static void print_profile(void) {
   const double cfSECS_PER_CLOCK = 1.0 / CLOCKS_PER_SEC;
 
@@ -1054,7 +1095,67 @@ static void print_profile(void) {
       );
     }
   }
+
+#ifdef R05_PROFILER
+  print_functions_profile(full_time * cfSECS_PER_CLOCK);
+#endif  /* R05_PROFILER */
 }
+
+#ifdef R05_PROFILER
+/* предобъявление, без инициализатора */
+static unsigned long s_step_counter;
+
+static void print_functions_profile(double full_time_sec) {
+  double mean_step_time = full_time_sec / s_step_counter;
+  struct r05_function *func, *sorted = NULL;
+  FILE *profile;
+  double increment = 0;
+  int no = 1;
+
+  while (s_profiled_functions != NULL) {
+    struct r05_function **parent;
+
+    func = s_profiled_functions;
+    s_profiled_functions = func->next;
+    parent = &sorted;
+    while (*parent != NULL && (*parent)->seconds > func->seconds) {
+      parent = &(*parent)->next;
+    }
+    func->next = *parent;
+    *parent = func;
+  }
+
+  s_profiled_functions = sorted;
+
+  profile = fopen("__profile-05.txt", "w");
+  if (profile == NULL) {
+    fprintf(stderr, "Can't open '__profile-05.txt' for writting.\n");
+    fprintf(stderr, "Profile will be written to stderr.\n\n");
+    profile = stderr;
+  }
+
+  fprintf(profile, "Total steps: %lu\n", s_step_counter);
+  fprintf(profile, "Total time: %.3f secs\n", full_time_sec);
+  fprintf(profile, "Mean step time: %.3f us\n\n", mean_step_time * 1e6);
+  for (
+    func = s_profiled_functions;
+    func != NULL && func->seconds > 0;
+    func = func->next, no++
+  ) {
+    double percent = func->seconds / full_time_sec * 100.0;
+    increment += percent;
+    fprintf(
+      profile,
+      "%3d. %-45s %10.3f ms (%6.2f %% += %6.2f %%), %10lu calls, %10.3f steps\n",
+      no, func->name, func->seconds * 1e3, percent, increment,
+      func->calls, func->seconds / func->calls / mean_step_time
+    );
+  }
+  if (profile != stderr) {
+    fclose(profile);
+  }
+}
+#endif  /* R05_PROFILER */
 
 #endif  /* R05_SHOW_STAT */
 
@@ -1088,6 +1189,11 @@ void r05_stop_e_loop(void) {
   if (--s_in_e_loop == 0) {
     s_total_e_loop += (clock() - s_start_e_loop);
   }
+}
+
+
+double r05_time_elapsed(void) {
+  return (clock() - s_start_program_time) / (double) CLOCKS_PER_SEC;
 }
 
 
@@ -1139,8 +1245,13 @@ static struct r05_node *s_arg_begin;
 static struct r05_node *s_arg_end;
 
 static void main_loop(void) {
+#ifdef R05_PROFILER
+  clock_t start_step = clock(), now;
+#endif  /* R05_PROFILER */
+
   while (! empty_stack()) {
     struct r05_node *function;
+    struct r05_function *callee;
 
     s_arg_begin = pop_stack();
     assert(! empty_stack());
@@ -1154,11 +1265,23 @@ static void main_loop(void) {
 
     function = s_arg_begin->next;
     if (R05_DATATAG_FUNCTION == function->tag) {
-      (function->info.function->ptr)(s_arg_begin, s_arg_end);
+      callee = function->info.function;
+      (callee->ptr)(s_arg_begin, s_arg_end);
     } else {
       r05_recognition_impossible();
     }
     after_step();
+
+#ifdef R05_PROFILER
+    now = clock();
+    if (callee->next == 0) {
+      callee->next = s_profiled_functions;
+      s_profiled_functions = callee;
+    }
+    callee->seconds += (now - start_step) / (double) CLOCKS_PER_SEC;
+    callee->calls += 1;
+    start_step = now;
+#endif  /* R05_PROFILER */
 
     ++ s_step_counter;
   }
@@ -1230,7 +1353,7 @@ static void print_seq(struct r05_node *begin, struct r05_node *end) {
             continue;
 
           case R05_DATATAG_NUMBER:
-            fprintf(stderr, "%lu ", begin->info.number);
+            fprintf(stderr, "%u ", begin->info.number);
             move_left(&begin, &end);
             continue;
 

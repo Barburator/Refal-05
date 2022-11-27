@@ -1,7 +1,3 @@
-*$FROM R5FW-Parser-Defs
-$EXTERN Extern, Entry, Function, SpecialComment, Local, Variable, RETURN, Symbol,
-  Brackets, Char, Number, Word, Call;
-
 *$FROM LibraryEx
 $EXTERN SaveFile, MapAccum, Map, Dec, Inc;
 
@@ -48,6 +44,11 @@ $ENTRY generator_GenTreeItem {
     (e.Declarations <Map r05-generator_GenExtern e.Names>)
     /* пусто */;
 
+  (e.Declarations) (Function t.SrcPos (e.Name) s.ScopeClass /* пусто */)
+    = (e.Declarations <GenEmptyDefinition e.Name s.ScopeClass>)
+      <AssertEq Local s.ScopeClass>
+      /* пусто */;
+
   (e.Declarations) (Function t.SrcPos (e.Name) s.ScopeClass e.Body) =
     (e.Declarations <GenDeclaration s.ScopeClass e.Name>)
     <GenFunction s.ScopeClass (e.Name) e.Body>;
@@ -76,16 +77,26 @@ Scope {
   Entry = 'ENTRY'; Local = 'LOCAL';
 }
 
+GenEmptyDefinition {
+  /* поддержка пустого составного символа "" */
+  /* пусто */ s.ScopeClass
+    = ('static struct r05_function r05f_ = { r05_enum_function_code, "" };');
+
+  e.Name s.ScopeClass
+    = ('R05_DEFINE_' <Scope s.ScopeClass> '_ENUM(' <DefName e.Name> ')');
+}
+
 GenDeclaration {
+  /* поддержка пустого составного символа "" */
+  s.ScopeClass /* пусто */
+    = <AssertEq Entry s.ScopeClass>
+      ('extern struct r05_function r05f_;');
+
   s.ScopeClass e.Name =
     ('R05_DECLARE_' <Scope s.ScopeClass> '_FUNCTION(' <EscapeName e.Name> ')');
 }
 
 GenFunction {
-  s.ScopeClass (e.Name) /* пусто */ =
-    ('R05_DEFINE_' <Scope s.ScopeClass> '_ENUM(' <DefName e.Name> ')')
-    ();
-
   s.ScopeClass (e.Name) e.Sentences =
     ('R05_DEFINE_' <Scope s.ScopeClass> '_FUNCTION(' <DefName e.Name> ') {')
     ('  r05_this_is_generated_function();')
@@ -94,8 +105,11 @@ GenFunction {
     ();
 }
 
+AssertEq { s.X s.X = }
+
+
 DefName {
-  e.Name = <EscapeName e.Name> ', "' e.Name '"';
+  e.Name = <EscapeName e.Name> ', "' <EscapeString e.Name> '"';
 }
 
 /*
@@ -104,14 +118,53 @@ DefName {
   подряд в декорированном имени.
 */
 EscapeName {
-  '_' e.Name = 'u_' <EscapeName e.Name>;
-  '-' e.Name = 'm_' <EscapeName e.Name>;
-  '$' e.Name = 'd_' <EscapeName e.Name>;
-  s.Other e.Name = s.Other <EscapeName e.Name>;
+  e.Name = <EscapeName-GlueCodes <Map r05-generator_EscapeNameChar e.Name>>;
+}
+
+$ENTRY r05-generator_EscapeNameChar {
+  '_' = (e 'u_');
+  '-' = (e 'm-');
+  '$' = (e 'd$');
+
+  s.Other
+    , <Type s.Other>
+    : {
+        'L' s.st_ s.Letter = (c s.Letter);
+        'D' s.st_ s.Digit = (c s.Digit);
+
+        s.t_ s.st_ s.Encoded = (k <EscapeNameChar-Code s.Encoded>);
+      };
+}
+
+EscapeNameChar-Code {
+  s.Char, <Ord s.Char> : s.Code = <Hex </ s.Code 16>> <Hex <% s.Code 16>>;
+}
+
+EscapeName-GlueCodes {
+  (k e.Code1) (k e.Code2) e.Name
+    = <EscapeName-GlueCodes (k e.Code1 e.Code2) e.Name>;
+
+  (k e.Code1) (c s.Char) (k e.Code2) e.Name
+    = <EscapeName-GlueCodes
+        (k e.Code1 <EscapeNameChar-Code s.Char> e.Code2) e.Name
+      >;
+
+  (k e.Code1) (e s.Escape_ s.Char) (k e.Code2) e.Name
+    = <EscapeName-GlueCodes
+        (k e.Code1 <EscapeNameChar-Code s.Char> e.Code2) e.Name
+      >;
+
+  (k e.Code) e.Name = 'k' e.Code '_' <EscapeName-GlueCodes e.Name>;
+  (e s.Escape s.Char_) e.Name = s.Escape '_' <EscapeName-GlueCodes e.Name>;
+  (c s.Char) e.Name = s.Char <EscapeName-GlueCodes e.Name>;
   /* пусто */ = /* пусто */;
 }
 
-*$ENUM ReturnRecognitionImpossible
+Hex {
+  10 = 'A'; 11 = 'B'; 12 = 'C'; 13 = 'D'; 14 = 'E'; 15 = 'F';
+
+  s.Dec = <Symb s.Dec>;
+}
 
 AddFailCommand {
   /*
@@ -442,9 +495,6 @@ CompileSentence-Aux {
 * Генерация образца
 *===============================================================================
 
-* Направление распознавания
-*$ENUM AlgLeft, AlgRight
-
 /*
 Команды распознавания
   Символы, скобки, повторные переменные и s-, t-переменные:
@@ -479,9 +529,6 @@ CompileSentence-Aux {
   Комментарий, вносимый в исходный код:
     (CmdComment e.Text)
 */
-*$ENUM Repeated
-
-*$ENUM CmdOpenedE
 
 GenPattern {
   e.Pattern =
@@ -659,19 +706,6 @@ GenResult {
   построение результата (в обратном порядке)
 */
 
-*$ENUM TkString, TkCloseBracket, TkCloseCall
-
-DesugarName {
-  '%' = 'Mod';
-  '*' = 'Mul';
-  '+' = 'Add';
-  '-' = 'Sub';
-  '/' = 'Div';
-  '?' = 'Residue';
-
-  e.Name = e.Name;
-}
-
 DoGenResult {
   /* Оптимизация для распределения последовательности char’ов */
   (e.Vars) (e.AllocCommands) (e.Commands) s.Counter
@@ -734,7 +768,7 @@ DoGenResult {
       (e.Vars)
       (e.AllocCommands (CmdAllocateElem ElOpenCall s.Counter))
       (e.Commands)
-      <Inc s.Counter> (Symbol Word <DesugarName e.Name>)
+      <Inc s.Counter> (Symbol Word e.Name)
       e.InBrackets (TkCloseCall s.Counter) e.Result
     >;
 
